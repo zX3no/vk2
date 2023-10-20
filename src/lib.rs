@@ -1,4 +1,7 @@
-use ash::{extensions::khr, *};
+use ash::{
+    extensions::{ext::DebugUtils, khr},
+    *,
+};
 use win_window::*;
 
 pub unsafe fn str_from_i8(slice: &[i8]) -> Result<&str, std::str::Utf8Error> {
@@ -189,29 +192,41 @@ pub struct Vulkan {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub image_view: Vec<vk::ImageView>,
+
+    pub debug: vk::DebugUtilsMessengerEXT,
 }
 
 impl Vulkan {
     pub fn new(width: u32, height: u32) -> Self {
+        const LAYERS: [*const i8; 1] = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const i8];
+        const EXTENSIONS: [*const i8; 2] = [
+            khr::Surface::NAME.as_ptr(),
+            khr::Win32Surface::NAME.as_ptr(),
+        ];
+        const DEBUG_EXTENSIONS: [*const i8; 3] = [
+            khr::Surface::NAME.as_ptr(),
+            khr::Win32Surface::NAME.as_ptr(),
+            extensions::ext::DebugUtils::NAME.as_ptr(),
+        ];
+
         unsafe {
             let entry = ash::Entry::linked();
             let instance = entry
                 .create_instance(
                     &vk::InstanceCreateInfo::default()
-                        .enabled_layer_names(&[
-                            b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const i8
-                        ])
-                        .enabled_extension_names(&[
-                            khr::Surface::NAME.as_ptr(),
-                            khr::Win32Surface::NAME.as_ptr(),
-                        ]),
+                        .enabled_layer_names(&LAYERS)
+                        .enabled_extension_names(if true {
+                            &DEBUG_EXTENSIONS
+                        } else {
+                            &EXTENSIONS
+                        }),
                     None,
                 )
                 .unwrap();
 
+            let debug = enable_debugging(&entry, &instance);
             let (window, surface) = create_surface(&entry, &instance, width, height);
             let (physical_device, device, queue) = create_device(&instance);
-
             let (swapchain, images, image_view) = create_swapchain(
                 &entry,
                 &instance,
@@ -232,6 +247,7 @@ impl Vulkan {
                 swapchain,
                 images,
                 image_view,
+                debug,
             }
         }
     }
@@ -255,4 +271,56 @@ impl Drop for Vulkan {
             self.instance.destroy_instance(None);
         }
     }
+}
+
+unsafe extern "system" fn vulkan_debug_callback(
+    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _user_data: *mut std::os::raw::c_void,
+) -> vk::Bool32 {
+    use std::borrow::Cow;
+    use std::ffi::CStr;
+
+    let callback_data = *p_callback_data;
+    let message_id_number = callback_data.message_id_number;
+
+    let message_id_name = if callback_data.p_message_id_name.is_null() {
+        Cow::from("")
+    } else {
+        CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy()
+    };
+
+    let message = if callback_data.p_message.is_null() {
+        Cow::from("")
+    } else {
+        CStr::from_ptr(callback_data.p_message).to_string_lossy()
+    };
+
+    println!(
+        "{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})]: {}\n",
+        message.trim_start()
+    );
+
+    vk::FALSE
+}
+
+pub unsafe fn enable_debugging(entry: &Entry, instance: &Instance) -> vk::DebugUtilsMessengerEXT {
+    let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+        .message_severity(
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+        )
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+        )
+        .pfn_user_callback(Some(vulkan_debug_callback));
+
+    let debug_fn = DebugUtils::new(&entry, &instance);
+    debug_fn
+        .create_debug_utils_messenger(&debug_info, None)
+        .unwrap()
 }
