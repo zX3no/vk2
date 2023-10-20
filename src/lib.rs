@@ -38,7 +38,8 @@ pub unsafe fn create_surface(
     (window, surface)
 }
 
-pub unsafe fn create_device(instance: &Instance) -> (vk::PhysicalDevice, Device, vk::Queue) {
+///https://vulkan.gpuinfo.org/displayreport.php?id=18463#queuefamilies
+pub unsafe fn create_device(instance: &Instance) -> (vk::PhysicalDevice, Device, vk::Queue, u32) {
     let devices = instance.enumerate_physical_devices().unwrap();
     let physical_device = &devices[0];
     let queue = instance.get_physical_device_queue_family_properties(*physical_device);
@@ -69,7 +70,7 @@ pub unsafe fn create_device(instance: &Instance) -> (vk::PhysicalDevice, Device,
         .unwrap();
     let queue = device.get_device_queue(index as u32, 0);
 
-    (*physical_device, device, queue)
+    (*physical_device, device, queue, index as u32)
 }
 
 pub const SURFACE_FORMAT: vk::SurfaceFormatKHR = vk::SurfaceFormatKHR {
@@ -155,6 +156,31 @@ pub unsafe fn create_swapchain(
     (swapchain, images, image_views)
 }
 
+pub unsafe fn create_commands(
+    device: &Device,
+    index: u32,
+) -> (vk::CommandPool, Vec<vk::CommandBuffer>) {
+    let pool = device
+        .create_command_pool(
+            &vk::CommandPoolCreateInfo::default()
+                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                .queue_family_index(index),
+            None,
+        )
+        .unwrap();
+
+    let command_buffers = device
+        .allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_buffer_count(1)
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY),
+        )
+        .unwrap();
+
+    (pool, command_buffers)
+}
+
 pub enum ShaderType {
     Vertex,
     Fragment,
@@ -188,11 +214,12 @@ pub struct Vulkan {
     pub surface: vk::SurfaceKHR,
     pub device: Device,
     pub queue: vk::Queue,
-
+    pub queue_index: u32,
+    pub command_pool: vk::CommandPool,
+    pub command_buffers: Vec<vk::CommandBuffer>,
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub image_view: Vec<vk::ImageView>,
-
     pub debug: vk::DebugUtilsMessengerEXT,
 }
 
@@ -226,7 +253,7 @@ impl Vulkan {
 
             let debug = enable_debugging(&entry, &instance);
             let (window, surface) = create_surface(&entry, &instance, width, height);
-            let (physical_device, device, queue) = create_device(&instance);
+            let (physical_device, device, queue, queue_index) = create_device(&instance);
             let (swapchain, images, image_view) = create_swapchain(
                 &entry,
                 &instance,
@@ -236,6 +263,7 @@ impl Vulkan {
                 width,
                 height,
             );
+            let (command_pool, command_buffers) = create_commands(&device, queue_index);
 
             Vulkan {
                 entry,
@@ -244,6 +272,9 @@ impl Vulkan {
                 surface,
                 device,
                 queue,
+                queue_index,
+                command_pool,
+                command_buffers,
                 swapchain,
                 images,
                 image_view,
@@ -258,12 +289,17 @@ impl Drop for Vulkan {
         unsafe {
             let surface_fn = khr::Surface::new(&self.entry, &self.instance);
             let swapchain_fn = khr::Swapchain::new(&self.instance, &self.device);
+            let debug_fn = DebugUtils::new(&self.entry, &self.instance);
+
+            self.device.destroy_command_pool(self.command_pool, None);
 
             swapchain_fn.destroy_swapchain(self.swapchain, None);
 
             for image in std::mem::take(&mut self.image_view) {
                 self.device.destroy_image_view(image, None);
             }
+
+            debug_fn.destroy_debug_utils_messenger(self.debug, None);
 
             self.device.destroy_device(None);
             surface_fn.destroy_surface(self.surface, None);
