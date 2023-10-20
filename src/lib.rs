@@ -74,46 +74,40 @@ pub const SURFACE_FORMAT: vk::SurfaceFormatKHR = vk::SurfaceFormatKHR {
     color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
 };
 
-pub unsafe fn get_surface_info(
+pub unsafe fn create_swapchain(
     entry: &Entry,
     instance: &Instance,
     surface: &vk::SurfaceKHR,
     physical_device: &vk::PhysicalDevice,
-) -> u32 {
+    device: &Device,
+    width: u32,
+    height: u32,
+) -> (vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>) {
     let surface_fn = khr::Surface::new(&entry, &instance);
+    let surface_capabilities = surface_fn
+        .get_physical_device_surface_capabilities(*physical_device, *surface)
+        .unwrap();
     let surface_formats = surface_fn
         .get_physical_device_surface_formats(*physical_device, *surface)
         .unwrap();
+
     if !surface_formats.contains(&SURFACE_FORMAT) {
         panic!(
             "Physical device does not support this format: {:?}",
             SURFACE_FORMAT
         );
     }
-    let surface_capabilities = surface_fn
-        .get_physical_device_surface_capabilities(*physical_device, *surface)
-        .unwrap();
 
-    //Usually this is 2 for front and back buffer.
-    //Add one more to tripple buffer.
-    surface_capabilities.min_image_count + 1
-}
-
-pub unsafe fn create_swapchain(
-    instance: &Instance,
-    surface: &vk::SurfaceKHR,
-    device: &Device,
-    min_image_count: u32,
-    width: u32,
-    height: u32,
-) -> (vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>) {
     let swapchain_fn = khr::Swapchain::new(instance, device);
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(*surface)
-        .min_image_count(min_image_count)
+        .min_image_count(surface_capabilities.min_image_count + 1)
         .image_color_space(SURFACE_FORMAT.color_space)
         .image_format(SURFACE_FORMAT.format)
-        .image_extent(vk::Extent2D { width, height })
+        .image_extent(match surface_capabilities.current_extent.width {
+            std::u32::MAX => vk::Extent2D { width, height },
+            _ => surface_capabilities.current_extent,
+        })
         .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
@@ -171,7 +165,7 @@ pub unsafe fn create_shader(device: &Device, bytes: &[u8], shader_type: ShaderTy
     let shader_info = vk::ShaderModuleCreateInfo::default().code(&code);
     let shader_module = device.create_shader_module(&shader_info, None).unwrap();
 
-    let shader = vk::PipelineShaderStageCreateInfo {
+    let _shader = vk::PipelineShaderStageCreateInfo {
         module: shader_module,
         p_name: MAIN,
         stage: match shader_type {
@@ -203,10 +197,14 @@ impl Vulkan {
             let entry = ash::Entry::linked();
             let instance = entry
                 .create_instance(
-                    &vk::InstanceCreateInfo::default().enabled_extension_names(&[
-                        khr::Surface::NAME.as_ptr(),
-                        khr::Win32Surface::NAME.as_ptr(),
-                    ]),
+                    &vk::InstanceCreateInfo::default()
+                        .enabled_layer_names(&[
+                            b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const i8
+                        ])
+                        .enabled_extension_names(&[
+                            khr::Surface::NAME.as_ptr(),
+                            khr::Win32Surface::NAME.as_ptr(),
+                        ]),
                     None,
                 )
                 .unwrap();
@@ -214,9 +212,15 @@ impl Vulkan {
             let (window, surface) = create_surface(&entry, &instance, width, height);
             let (physical_device, device, queue) = create_device(&instance);
 
-            let min = get_surface_info(&entry, &instance, &surface, &physical_device);
-            let (swapchain, images, image_view) =
-                create_swapchain(&instance, &surface, &device, min, width, height);
+            let (swapchain, images, image_view) = create_swapchain(
+                &entry,
+                &instance,
+                &surface,
+                &physical_device,
+                &device,
+                width,
+                height,
+            );
 
             Vulkan {
                 entry,
@@ -247,6 +251,7 @@ impl Drop for Vulkan {
 
             self.device.destroy_device(None);
             surface_fn.destroy_surface(self.surface, None);
+
             self.instance.destroy_instance(None);
         }
     }
