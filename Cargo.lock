@@ -9,9 +9,7 @@ source = "git+https://github.com/ash-rs/ash#d0d5ea1370ff2b3b5a49ed5b6866e1e4bd35
 
 [[package]]
 name = "minilog"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60fbb992c5c8785c4c1083cbe14498622ae3323689c94ba75de414344aff5dfe"
+version = "0.1.1"
 
 [[package]]
 name = "vk2"

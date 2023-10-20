@@ -49,9 +49,9 @@ pub unsafe fn create_device(instance: &Instance) -> (vk::PhysicalDevice, Device,
         .find(|(_, info)| info.queue_flags.contains(vk::QueueFlags::GRAPHICS))
         .unwrap();
 
-    let properties = instance.get_physical_device_properties(*physical_device);
-    let name = str_from_i8(&properties.device_name).unwrap();
-    minilog::info!("Physical Device: {}", name);
+    // let properties = instance.get_physical_device_properties(*physical_device);
+    // let name = str_from_i8(&properties.device_name).unwrap();
+    // minilog::info!("Physical Device: {}", name);
 
     let device = instance
         .create_device(
@@ -84,9 +84,12 @@ pub unsafe fn create_swapchain(
     surface: &vk::SurfaceKHR,
     physical_device: &vk::PhysicalDevice,
     device: &Device,
-    width: u32,
-    height: u32,
-) -> (vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>) {
+) -> (
+    vk::SwapchainKHR,
+    Vec<vk::Image>,
+    Vec<vk::ImageView>,
+    vk::SurfaceCapabilitiesKHR,
+) {
     let surface_fn = khr::Surface::new(&entry, &instance);
     let surface_capabilities = surface_fn
         .get_physical_device_surface_capabilities(*physical_device, *surface)
@@ -108,10 +111,7 @@ pub unsafe fn create_swapchain(
         .min_image_count(surface_capabilities.min_image_count + 1)
         .image_color_space(SURFACE_FORMAT.color_space)
         .image_format(SURFACE_FORMAT.format)
-        .image_extent(match surface_capabilities.current_extent.width {
-            std::u32::MAX => vk::Extent2D { width, height },
-            _ => surface_capabilities.current_extent,
-        })
+        .image_extent(surface_capabilities.current_extent)
         .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
@@ -153,7 +153,7 @@ pub unsafe fn create_swapchain(
         })
         .collect();
 
-    (swapchain, images, image_views)
+    (swapchain, images, image_views, surface_capabilities)
 }
 
 pub unsafe fn create_commands(
@@ -205,21 +205,69 @@ pub unsafe fn create_shader(device: &Device, bytes: &[u8], shader_type: ShaderTy
     };
 }
 
-pub unsafe fn create_graphics_pipeline() {}
+pub unsafe fn create_render_pass(
+    device: &Device,
+    image_views: &[vk::ImageView],
+    surface_capabilities: vk::SurfaceCapabilitiesKHR,
+) -> (vk::RenderPass, Vec<vk::Framebuffer>) {
+    let render_pass = device
+        .create_render_pass(
+            &vk::RenderPassCreateInfo::default()
+                .attachments(&[vk::AttachmentDescription {
+                    format: SURFACE_FORMAT.format,
+                    samples: vk::SampleCountFlags::TYPE_1,
+                    load_op: vk::AttachmentLoadOp::CLEAR,
+                    store_op: vk::AttachmentStoreOp::STORE,
+                    final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                    ..Default::default()
+                }])
+                .subpasses(&[vk::SubpassDescription::default()
+                    .color_attachments(&[vk::AttachmentReference {
+                        attachment: 0,
+                        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    }])
+                    .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]),
+            None,
+        )
+        .unwrap();
+
+    let framebuffers: Vec<vk::Framebuffer> = image_views
+        .iter()
+        .map(|image_view| {
+            let attachments = &[*image_view];
+            device
+                .create_framebuffer(
+                    &vk::FramebufferCreateInfo::default()
+                        .render_pass(render_pass)
+                        .attachments(attachments)
+                        .width(surface_capabilities.current_extent.width)
+                        .height(surface_capabilities.current_extent.height)
+                        .layers(1),
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+
+    (render_pass, framebuffers)
+}
 
 pub struct Vulkan {
     pub entry: Entry,
     pub instance: Instance,
     pub window: Window,
     pub surface: vk::SurfaceKHR,
+    pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub device: Device,
     pub queue: vk::Queue,
     pub queue_index: u32,
     pub command_pool: vk::CommandPool,
     pub command_buffers: Vec<vk::CommandBuffer>,
+    pub render_pass: vk::RenderPass,
     pub swapchain: vk::SwapchainKHR,
-    pub images: Vec<vk::Image>,
-    pub image_view: Vec<vk::ImageView>,
+    pub swapchain_images: Vec<vk::Image>,
+    pub swapchain_image_views: Vec<vk::ImageView>,
+    pub framebuffers: Vec<vk::Framebuffer>,
     pub debug: vk::DebugUtilsMessengerEXT,
 }
 
@@ -254,30 +302,28 @@ impl Vulkan {
             let debug = enable_debugging(&entry, &instance);
             let (window, surface) = create_surface(&entry, &instance, width, height);
             let (physical_device, device, queue, queue_index) = create_device(&instance);
-            let (swapchain, images, image_view) = create_swapchain(
-                &entry,
-                &instance,
-                &surface,
-                &physical_device,
-                &device,
-                width,
-                height,
-            );
+            let (swapchain, swapchain_images, swapchain_image_views, surface_capabilities) =
+                create_swapchain(&entry, &instance, &surface, &physical_device, &device);
             let (command_pool, command_buffers) = create_commands(&device, queue_index);
+            let (render_pass, framebuffers) =
+                create_render_pass(&device, &swapchain_image_views, surface_capabilities);
 
             Vulkan {
                 entry,
                 instance,
                 window,
                 surface,
+                surface_capabilities,
                 device,
                 queue,
                 queue_index,
                 command_pool,
                 command_buffers,
                 swapchain,
-                images,
-                image_view,
+                render_pass,
+                framebuffers,
+                swapchain_images,
+                swapchain_image_views,
                 debug,
             }
         }
@@ -291,11 +337,15 @@ impl Drop for Vulkan {
             let swapchain_fn = khr::Swapchain::new(&self.instance, &self.device);
             let debug_fn = DebugUtils::new(&self.entry, &self.instance);
 
-            self.device.destroy_command_pool(self.command_pool, None);
+            for framebuffer in std::mem::take(&mut self.framebuffers) {
+                self.device.destroy_framebuffer(framebuffer, None)
+            }
 
+            self.device.destroy_render_pass(self.render_pass, None);
+            self.device.destroy_command_pool(self.command_pool, None);
             swapchain_fn.destroy_swapchain(self.swapchain, None);
 
-            for image in std::mem::take(&mut self.image_view) {
+            for image in std::mem::take(&mut self.swapchain_image_views) {
                 self.device.destroy_image_view(image, None);
             }
 
@@ -315,6 +365,7 @@ unsafe extern "system" fn vulkan_debug_callback(
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _user_data: *mut std::os::raw::c_void,
 ) -> vk::Bool32 {
+    use minilog::*;
     use std::borrow::Cow;
     use std::ffi::CStr;
 
@@ -333,10 +384,26 @@ unsafe extern "system" fn vulkan_debug_callback(
         CStr::from_ptr(callback_data.p_message).to_string_lossy()
     };
 
-    println!(
-        "{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})]: {}\n",
+    let message = format!(
+        "{message_type:?} [{message_id_name} ({message_id_number})]: {}",
         message.trim_start()
     );
+
+    match message_severity {
+        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
+            info!("{message}");
+        }
+        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
+            info!("{message}");
+        }
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+            warn!("{message}");
+        }
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+            error!("{message}");
+        }
+        _ => unreachable!(),
+    };
 
     vk::FALSE
 }

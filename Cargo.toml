@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 ash = { git="https://github.com/ash-rs/ash", default-features = false, features = ["linked", "debug"] }
-minilog = "0.1.0"
+minilog = { version = "0.1.0", path = "../rust/log" }
 win_window = { version = "0.1.0", path = "../win_window" }
