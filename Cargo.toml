@@ -1,0 +1,11 @@
+[package]
+name = "vk2"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ash = { git="https://github.com/ash-rs/ash", default-features = false, features = ["linked", "debug"] }
+minilog = "0.1.0"
+win_window = { version = "0.1.0", path = "../win_window" }
