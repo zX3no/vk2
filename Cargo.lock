@@ -8,15 +8,15 @@ version = "0.37.0+1.3.260"
 source = "git+https://github.com/ash-rs/ash#d0d5ea1370ff2b3b5a49ed5b6866e1e4bd353de1"
 
 [[package]]
-name = "minilog"
-version = "0.1.1"
+name = "mini"
+version = "0.1.0"
 
 [[package]]
 name = "vk2"
 version = "0.1.0"
 dependencies = [
  "ash",
- "minilog",
+ "mini",
  "win_window",
 ]
 
